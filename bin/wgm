@@ -1,0 +1,425 @@
+#!/usr/bin/env php
+<?php
+/*
+ * wgm — command-line companion for wg-manager. Run as root.
+ * `wgm help` lists the commands.
+ */
+declare(strict_types=1);
+
+require dirname(__DIR__) . '/lib/bootstrap.php';
+
+const HELP = <<<TXT
+wg-manager CLI
+
+Setup
+  wgm init [--interface wg0] [--port 51820] [--address 10.8.0.1/24]
+           [--endpoint host] [--endpoint-port N] [--dns 1.1.1.1] [--allowed-ips CIDRs] [--force]
+  wgm import-wgeasy <wg0.json> [--interface wg0] [--port 51820] [--endpoint host]
+           [--endpoint-port N] [--prefix 24] [--allowed-ips CIDRs] [--dns IPs]
+           [--keepalive N] [--mtu N] [--apply]
+  wgm set [--interface NAME] [--port N] [--address CIDR] [--endpoint HOST]
+          [--endpoint-port N] [--mtu N|none] [--apply]
+
+Clients
+  wgm list
+  wgm route add <client name|IP> <cidr> [--apply]
+  wgm route del <client name|IP> <cidr> [--apply]
+
+Hub
+  wgm apply                 write the config and sync the interface
+  wgm status                live peers
+  wgm health                service checks
+  wgm repair-key            set the state's server public key from the key on disk
+
+Admin users
+  wgm user list
+  wgm user add <name> [--password P]     (random password printed if omitted)
+  wgm user passwd <name> [--password P]
+  wgm user reset-2fa <name>
+  wgm user del <name>
+  wgm ui-allow clear        remove the web UI IP allow-list (if you locked yourself out)
+
+Backups
+  wgm backup [reason]
+  wgm backups
+  wgm restore <backup name|file> [--apply]
+
+Internal
+  wgm tick                  background job (expiry, alerts, nightly backup)
+
+TXT;
+
+function say(string $s = ''): void
+{
+    fwrite(STDOUT, $s . "\n");
+}
+
+function die_(string $s, int $code = 1): void
+{
+    fwrite(STDERR, "wgm: $s\n");
+    exit($code);
+}
+
+/** @return array{0:string[],1:array<string,string|bool>} positional, options */
+function parseArgs(array $argv): array
+{
+    $pos = [];
+    $opt = [];
+    for ($i = 0; $i < count($argv); $i++) {
+        $a = $argv[$i];
+        if (strncmp($a, '--', 2) === 0) {
+            $k = substr($a, 2);
+            if (strpos($k, '=') !== false) {
+                [$k, $v] = explode('=', $k, 2);
+                $opt[$k] = $v;
+            } elseif (isset($argv[$i + 1]) && strncmp($argv[$i + 1], '--', 2) !== 0 && !in_array($k, ['force', 'apply'], true)) {
+                $opt[$k] = $argv[++$i];
+            } else {
+                $opt[$k] = true;
+            }
+        } else {
+            $pos[] = $a;
+        }
+    }
+    return [$pos, $opt];
+}
+
+/** Keep the state directory owned by the web user after root writes to it. */
+function fixOwnership(): void
+{
+    if (!Util::isRoot() || !function_exists('posix_getpwnam') || !posix_getpwnam(WGM_WEB_USER) || !is_dir(WGM_STATE_DIR)) {
+        return;
+    }
+    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(WGM_STATE_DIR, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::SELF_FIRST);
+    @chown(WGM_STATE_DIR, WGM_WEB_USER);
+    @chgrp(WGM_STATE_DIR, WGM_WEB_USER);
+    foreach ($it as $f) {
+        @chown((string)$f, WGM_WEB_USER);
+        @chgrp((string)$f, WGM_WEB_USER);
+    }
+}
+
+function randomPassword(): string
+{
+    $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+    $p = '';
+    for ($i = 0; $i < 16; $i++) {
+        $p .= $chars[random_int(0, strlen($chars) - 1)];
+    }
+    return $p;
+}
+
+function doApply(): void
+{
+    $r = Wg::apply();
+    say('Applied: ' . implode(', ', $r['actions'] ?? []) . ' — ' . (int)($r['peers'] ?? 0) . ' active peers.');
+    if (!empty($r['routes']['added'])) {
+        say('  routes added: ' . implode(', ', $r['routes']['added']));
+    }
+    if (!empty($r['routes']['removed'])) {
+        say('  routes removed: ' . implode(', ', $r['routes']['removed']));
+    }
+    Audit::log('apply', implode(', ', $r['actions'] ?? []), 'cli', 'local');
+}
+
+function findClient(array $state, string $q): ?string
+{
+    foreach ($state['clients'] as $id => $c) {
+        if ($c['address'] === $q || strcasecmp($c['name'], $q) === 0 || $id === $q) {
+            return $id;
+        }
+    }
+    return null;
+}
+
+// Whatever root wrote into the state directory must stay writable by the web app.
+register_shutdown_function('fixOwnership');
+
+[$pos, $opt] = parseArgs(array_slice($argv, 1));
+$cmd = array_shift($pos) ?? 'help';
+
+try {
+    if ($cmd !== 'help' && $cmd !== 'tick' && !Util::isRoot() && getenv('WGM_TEST') !== '1') {
+        die_('run wgm as root (sudo wgm ...)');
+    }
+    if (!is_dir(WGM_STATE_DIR) && (Util::isRoot() || getenv('WGM_TEST') === '1')) {
+        mkdir(WGM_STATE_DIR, 0700, true);
+    }
+
+    switch ($cmd) {
+        case 'help':
+        case '--help':
+        case '-h':
+            echo HELP;
+            break;
+
+        case 'init':
+            if (Store::exists() && empty($opt['force'])) {
+                say('Already initialised (' . WGM_STATE_FILE . '). Use --force to start over (clients will be lost).');
+                break;
+            }
+            $s = State::defaults(
+                (string)($opt['interface'] ?? 'wg0'),
+                (int)($opt['port'] ?? 51820),
+                (string)($opt['address'] ?? '10.8.0.1/24'),
+                (string)($opt['endpoint'] ?? '')
+            );
+            if (isset($opt['endpoint-port'])) {
+                $s['settings']['endpointPort'] = (int)$opt['endpoint-port'];
+            }
+            if (isset($opt['dns'])) {
+                $s['settings']['defaults']['dns'] = implode(', ', Ip::splitList((string)$opt['dns']));
+            }
+            if (isset($opt['allowed-ips'])) {
+                $s['settings']['defaults']['allowedIps'] = implode(', ', Ip::splitList((string)$opt['allowed-ips']));
+            }
+            if ($e = State::checkSettings($s['settings'])) {
+                die_(implode("\n", $e));
+            }
+            $k = Wg::generateServerKey(!empty($opt['force']));
+            $s['server']['publicKey'] = $k['publicKey'];
+            if (Store::exists()) {
+                Store::backup('pre-init');
+            }
+            Store::saveRaw($s);
+            fixOwnership();
+            Audit::log('init', "interface {$s['settings']['interface']} port {$s['settings']['listenPort']} {$s['settings']['address']}", 'cli', 'local');
+            say("Initialised {$s['settings']['interface']} ({$s['settings']['address']}, udp/{$s['settings']['listenPort']}).");
+            say('Server public key: ' . $k['publicKey'] . ($k['created'] ? ' (new)' : ' (existing key kept)'));
+            break;
+
+        case 'import-wgeasy':
+            $file = $pos[0] ?? die_('usage: wgm import-wgeasy <wg0.json> [options]');
+            $json = Util::readJson($file);
+            if (!is_array($json)) {
+                die_("cannot read $file");
+            }
+            $base = Store::exists() ? Store::load() : null;
+            $o = [
+                'interface'  => (string)($opt['interface'] ?? ($base['settings']['interface'] ?? 'wg0')),
+                'listenPort' => (int)($opt['port'] ?? 51820),
+                'prefix'     => (int)($opt['prefix'] ?? 24),
+            ];
+            foreach (['endpoint' => 'endpointHost', 'endpoint-port' => 'endpointPort', 'allowed-ips' => 'allowedIps', 'dns' => 'dns', 'keepalive' => 'keepalive', 'mtu' => 'mtu'] as $from => $to) {
+                if (isset($opt[$from])) {
+                    $o[$to] = is_string($opt[$from]) ? $opt[$from] : '';
+                }
+            }
+            [$state, $priv, $warn] = State::fromWgEasy($json, $o, $base);
+            if ($e = State::validate($state)) {
+                die_("import would produce an invalid state:\n  " . implode("\n  ", $e));
+            }
+            Wg::setServerKey($priv);
+            Store::replace($state, 'import');
+            fixOwnership();
+            Audit::log('import.wgeasy', count($state['clients']) . " clients from $file", 'cli', 'local');
+            say('Imported ' . count($state['clients']) . ' clients; server public key ' . $state['server']['publicKey']);
+            say("Interface {$state['settings']['interface']} {$state['settings']['address']} udp/{$state['settings']['listenPort']}, endpoint " . ($state['settings']['endpointHost'] ?: '(not set!)') . ':' . $state['settings']['endpointPort']);
+            foreach ($warn as $w) {
+                say('  warning: ' . $w);
+            }
+            if (!empty($opt['apply'])) {
+                doApply();
+            } else {
+                say('Not applied yet. When ready: wgm apply');
+            }
+            break;
+
+        case 'set':
+            Store::update(function (array &$st) use ($opt) {
+                $s = &$st['settings'];
+                if (isset($opt['interface'])) {
+                    $s['interface'] = (string)$opt['interface'];
+                }
+                if (isset($opt['port'])) {
+                    $old = $s['listenPort'];
+                    $s['listenPort'] = (int)$opt['port'];
+                    if ($s['endpointPort'] === $old && !isset($opt['endpoint-port'])) {
+                        $s['endpointPort'] = $s['listenPort'];
+                    }
+                }
+                if (isset($opt['endpoint-port'])) {
+                    $s['endpointPort'] = (int)$opt['endpoint-port'];
+                }
+                if (isset($opt['address'])) {
+                    $s['address'] = (string)$opt['address'];
+                }
+                if (isset($opt['endpoint'])) {
+                    $s['endpointHost'] = (string)$opt['endpoint'];
+                }
+                if (isset($opt['mtu'])) {
+                    $s['mtu'] = $opt['mtu'] === 'none' ? null : (int)$opt['mtu'];
+                }
+            }, 'settings');
+            fixOwnership();
+            $st = Store::load()['settings'];
+            Audit::log('settings.interface', "{$st['interface']} {$st['address']} udp/{$st['listenPort']}", 'cli', 'local');
+            say("Settings: {$st['interface']} {$st['address']} udp/{$st['listenPort']} endpoint " . ($st['endpointHost'] ?: '(not set)') . ":{$st['endpointPort']}");
+            !empty($opt['apply']) ? doApply() : say('Not applied yet. When ready: wgm apply');
+            break;
+
+        case 'list':
+            $st = Store::load();
+            $status = [];
+            try {
+                $status = Wg::status()['peers'] ?? [];
+            } catch (Throwable $e) {
+            }
+            printf("%-28s %-15s %-8s %-22s %s\n", 'NAME', 'ADDRESS', 'STATE', 'HANDSHAKE', 'ROUTES');
+            $cl = $st['clients'];
+            uasort($cl, fn($a, $b) => ip2long($a['address']) <=> ip2long($b['address']));
+            foreach ($cl as $c) {
+                $p = $status[$c['publicKey']] ?? null;
+                printf("%-28s %-15s %-8s %-22s %s\n", substr($c['name'], 0, 28), $c['address'],
+                    State::isActive($c) ? 'on' : (State::isExpired($c) ? 'expired' : 'off'),
+                    $p ? Util::ago((int)$p['handshake']) : '-', implode(',', $c['serverRoutes']));
+            }
+            break;
+
+        case 'route':
+            $sub = $pos[0] ?? '';
+            $who = $pos[1] ?? '';
+            $cidr = $pos[2] ?? '';
+            if (!in_array($sub, ['add', 'del'], true) || $who === '' || $cidr === '') {
+                die_('usage: wgm route add|del <client name|IP> <cidr> [--apply]');
+            }
+            $p = Ip::parseCidr($cidr);
+            if (!$p) {
+                die_("$cidr is not a CIDR");
+            }
+            Store::update(function (array &$st) use ($sub, $who, $p) {
+                $id = findClient($st, $who);
+                if ($id === null) {
+                    throw new InvalidArgumentException("no client matches \"$who\"");
+                }
+                $r = $st['clients'][$id]['serverRoutes'];
+                $r = $sub === 'add' ? array_values(array_unique(array_merge($r, [$p['text']]))) : array_values(array_diff($r, [$p['text']]));
+                $st['clients'][$id]['serverRoutes'] = $r;
+                $st['clients'][$id]['updatedAt'] = Util::now();
+            }, 'route');
+            fixOwnership();
+            Audit::log('client.route-' . $sub, "$who {$p['text']}", 'cli', 'local');
+            say("Route {$p['text']} " . ($sub === 'add' ? 'added to' : 'removed from') . " $who.");
+            !empty($opt['apply']) ? doApply() : say('Not applied yet. When ready: wgm apply');
+            break;
+
+        case 'apply':
+            doApply();
+            break;
+
+        case 'status':
+            $s = Wg::status();
+            $st = Store::load();
+            $byKey = [];
+            foreach ($st['clients'] as $c) {
+                $byKey[$c['publicKey']] = $c;
+            }
+            say("{$s['interface']}: " . ($s['up'] ? 'up' : 'DOWN') . ($s['inSync'] ? ', in sync' : ', NOT in sync with saved config'));
+            foreach ($s['peers'] as $pub => $p) {
+                $c = $byKey[$pub] ?? null;
+                printf("  %-28s %-22s %-14s rx %-10s tx %s\n", substr($c['name'] ?? substr($pub, 0, 10) . '…', 0, 28), $p['endpoint'] ?: '-', Util::ago((int)$p['handshake']), Util::bytes($p['rx']), Util::bytes($p['tx']));
+            }
+            break;
+
+        case 'health':
+            foreach (Wg::health()['checks'] as $c) {
+                printf("  [%s] %-20s %s\n", $c['ok'] ? ' ok ' : 'FAIL', $c['name'], $c['detail']);
+            }
+            break;
+
+        case 'repair-key':
+            $pub = Wg::call(['server-key', 'public'])['publicKey'];
+            Store::update(function (array &$st) use ($pub) {
+                $st['server']['publicKey'] = $pub;
+            }, 'repair-key');
+            fixOwnership();
+            say("State server public key set to $pub");
+            break;
+
+        case 'user':
+            $sub = $pos[0] ?? 'list';
+            $name = $pos[1] ?? '';
+            if ($sub === 'list') {
+                foreach (Auth::users() as $n => $u) {
+                    say(sprintf('  %-24s 2FA %-4s last login %s', $n, $u['totp'] ? 'on' : 'off', $u['lastLogin'] ?? 'never'));
+                }
+                break;
+            }
+            if ($name === '') {
+                die_("usage: wgm user $sub <name>");
+            }
+            if ($sub === 'add' || $sub === 'passwd') {
+                $pw = is_string($opt['password'] ?? null) ? $opt['password'] : randomPassword();
+                $sub === 'add' ? Auth::addUser($name, $pw) : Auth::setPassword($name, $pw);
+                fixOwnership();
+                Audit::log('user.' . $sub, $name, 'cli', 'local');
+                say(($sub === 'add' ? "User $name created" : "Password changed for $name") . (isset($opt['password']) ? '.' : ". Password: $pw"));
+            } elseif ($sub === 'reset-2fa') {
+                Auth::setTotp($name, null);
+                fixOwnership();
+                Audit::log('user.2fa-reset', $name, 'cli', 'local');
+                say("2FA removed for $name.");
+            } elseif ($sub === 'del') {
+                Auth::deleteUser($name);
+                fixOwnership();
+                Audit::log('user.delete', $name, 'cli', 'local');
+                say("User $name deleted.");
+            } else {
+                die_('unknown user command');
+            }
+            break;
+
+        case 'ui-allow':
+            if (($pos[0] ?? '') !== 'clear') {
+                die_('usage: wgm ui-allow clear');
+            }
+            Store::update(function (array &$st) {
+                $st['settings']['ui']['allowFrom'] = [];
+            }, 'ui-allow');
+            fixOwnership();
+            Audit::log('settings.ui', 'allow-list cleared', 'cli', 'local');
+            say('Web UI allow-list cleared.');
+            break;
+
+        case 'backup':
+            $n = Store::backup($pos[0] ?? 'manual');
+            fixOwnership();
+            say('Backup written: ' . WGM_BACKUP_DIR . '/' . $n);
+            say('Note: the server private key is not in state backups. Keep a copy of ' . WGM_KEY_DIR . '/server.key somewhere safe.');
+            break;
+
+        case 'backups':
+            foreach (Store::backups() as $b) {
+                say(sprintf('  %s  %s  %s', date('Y-m-d H:i', $b['time']), str_pad(Util::bytes($b['size']), 9), $b['name']));
+            }
+            break;
+
+        case 'restore':
+            $arg = $pos[0] ?? die_('usage: wgm restore <backup name|file> [--apply]');
+            $path = Store::backupPath(basename($arg)) ?? (is_file($arg) ? $arg : null);
+            if ($path === null) {
+                die_("no such backup: $arg");
+            }
+            $data = Util::readJson($path);
+            Store::replace($data, 'restore');
+            fixOwnership();
+            Audit::log('backup.restore', basename($path), 'cli', 'local');
+            say('Restored ' . basename($path) . '.');
+            !empty($opt['apply']) ? doApply() : say('Not applied yet. When ready: wgm apply');
+            break;
+
+        case 'tick':
+            foreach (Tick::run() as $l) {
+                say($l);
+            }
+            fixOwnership();
+            break;
+
+        default:
+            die_("unknown command \"$cmd\" — see: wgm help");
+    }
+} catch (ValidationError $e) {
+    die_(implode("\n", $e->errors));
+} catch (Throwable $e) {
+    die_($e->getMessage());
+}
