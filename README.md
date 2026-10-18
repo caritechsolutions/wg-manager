@@ -41,13 +41,16 @@ IPv4 tunnels and routes. (Client configs may still list IPv6 AllowedIPs.)
 
 ## Install
 
-Ubuntu 22.04/24.04 or Debian 12, as root:
+Ubuntu 22.04/24.04 or Debian 12:
 
 ```bash
-git clone https://github.com/caritechsolutions/wg-manager.git /opt/wg-manager
-cd /opt/wg-manager
-sudo ./install.sh --endpoint vpn.example.com
+curl -fsSL https://raw.githubusercontent.com/caritechsolutions/wg-manager/main/install.sh \
+  | sudo bash -s -- --endpoint vpn.example.com
 ```
+
+The script downloads the code itself (no git needed) and installs it to `/opt/wg-manager`.
+Options go after `--`. To install a specific version, put `WGM_REF=<tag or branch>` before `bash`:
+`... | sudo WGM_REF=v1.0.0 bash -s -- ...`
 
 The installer prints the web UI address and the admin password. Common options:
 
@@ -68,7 +71,8 @@ The installer prints the web UI address and the admin password. Common options:
 Open the WireGuard UDP port and the UI port in any firewall in front of the server.
 If ufw is active the installer opens them for you.
 
-**Upgrade:** `cd /opt/wg-manager && git pull && sudo ./install.sh` — data is kept.
+**Upgrade:** run the same `curl … | sudo bash -s --` command again (options can be left off) —
+code and services are refreshed, clients, settings, users and keys are kept.
 
 ## Moving from wg-easy (Docker)
 
@@ -76,10 +80,9 @@ Run wg-manager **next to** the running wg-easy first, on a different interface, 
 so nothing changes for existing sites:
 
 ```bash
-git clone https://github.com/caritechsolutions/wg-manager.git /opt/wg-manager
-cd /opt/wg-manager
-sudo ./install.sh --interface wg1 --port 51822 --address 10.9.0.1/24 \
-     --endpoint wireguard.caritech.net --ui-port 8080
+curl -fsSL https://raw.githubusercontent.com/caritechsolutions/wg-manager/main/install.sh \
+  | sudo bash -s -- --interface wg1 --port 51822 --address 10.9.0.1/24 \
+      --endpoint wireguard.caritech.net --ui-port 8080
 ```
 
 Try it with a test client or two. When you're happy, cut over (a few minutes of downtime):

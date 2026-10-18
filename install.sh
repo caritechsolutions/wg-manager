@@ -2,7 +2,11 @@
 #
 # wg-manager installer — plain Linux (Ubuntu 22.04/24.04, Debian 12), no Docker.
 #
-#   sudo ./install.sh [options]
+#   curl -fsSL https://raw.githubusercontent.com/caritechsolutions/wg-manager/main/install.sh | sudo bash -s -- [options]
+#
+# Run that way, the script downloads the release tarball itself (no git needed).
+# Set WGM_REF=<branch|tag> to install a specific version (default: main).
+# Running ./install.sh from an unpacked copy works too.
 #
 # Safe to re-run: code, services and web config are refreshed; existing
 # clients, settings, users and keys are kept.
@@ -24,6 +28,31 @@
 #   --no-ufw               don't touch ufw even if it is active
 #
 set -euo pipefail
+
+WGM_REPO="${WGM_REPO:-caritechsolutions/wg-manager}"
+WGM_REF="${WGM_REF:-main}"
+
+# ------------------------------------------------------------------ bootstrap
+# When piped from curl there is no source tree next to the script: fetch the
+# tarball, unpack it to a temp dir and re-run the installer from there.
+# (Kept as one compound command so bash parses it fully before running it.)
+if [[ -z "${BASH_SOURCE[0]:-}" || ! -f "$(dirname "${BASH_SOURCE[0]}")/lib/bootstrap.php" ]]; then
+  if [[ $EUID -ne 0 ]]; then
+    echo "error: run as root:  curl -fsSL https://raw.githubusercontent.com/$WGM_REPO/$WGM_REF/install.sh | sudo bash -s -- [options]" >&2
+    exit 1
+  fi
+  command -v curl >/dev/null || { echo "error: curl is required" >&2; exit 1; }
+  command -v tar >/dev/null || { echo "error: tar is required" >&2; exit 1; }
+  WGM_TMP="$(mktemp -d /tmp/wg-manager.XXXXXX)"
+  printf '\033[1;32m==>\033[0m Downloading wg-manager (%s@%s)\n' "$WGM_REPO" "$WGM_REF"
+  if ! curl -fsSL "https://codeload.github.com/$WGM_REPO/tar.gz/$WGM_REF" | tar -xz -C "$WGM_TMP" --strip-components=1; then
+    echo "error: download failed (https://codeload.github.com/$WGM_REPO/tar.gz/$WGM_REF)" >&2
+    rm -rf "$WGM_TMP"
+    exit 1
+  fi
+  [[ -f "$WGM_TMP/lib/bootstrap.php" ]] || { echo "error: downloaded archive is not wg-manager" >&2; rm -rf "$WGM_TMP"; exit 1; }
+  WGM_CLEANUP_DIR="$WGM_TMP" exec bash "$WGM_TMP/install.sh" "$@" </dev/null
+fi
 
 APP_DIR=/opt/wg-manager
 STATE_DIR=/var/lib/wg-manager
@@ -48,6 +77,16 @@ IMPORT=""
 APPLY=1
 UFW=1
 
+POLICY=/usr/sbin/policy-rc.d
+POLICY_OURS=0
+# shellcheck disable=SC2317  # runs from the EXIT trap
+cleanup() {
+  if [[ $POLICY_OURS -eq 1 ]]; then rm -f "$POLICY"; fi
+  # Remove the temp copy made by a curl | bash install.
+  if [[ -n "${WGM_CLEANUP_DIR:-}" && "$WGM_CLEANUP_DIR" == /tmp/wg-manager.* ]]; then rm -rf "$WGM_CLEANUP_DIR"; fi
+}
+trap cleanup EXIT
+
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -70,7 +109,7 @@ while [[ $# -gt 0 ]]; do
     --import-wgeasy)  need_arg "$@"; IMPORT="$2"; shift 2 ;;
     --no-apply)       APPLY=0; shift ;;
     --no-ufw)         UFW=0; shift ;;
-    -h|--help)        sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)        sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
 done
@@ -91,17 +130,13 @@ export DEBIAN_FRONTEND=noninteractive
 NGINX_NEW=0
 dpkg -s nginx >/dev/null 2>&1 || NGINX_NEW=1
 # Stop apt from auto-starting nginx on port 80 while we install it.
-POLICY=/usr/sbin/policy-rc.d
-POLICY_OURS=0
 if [[ ! -e $POLICY ]]; then printf '#!/bin/sh\nexit 101\n' >"$POLICY"; chmod 755 "$POLICY"; POLICY_OURS=1; fi
-cleanup_policy() { if [[ $POLICY_OURS -eq 1 ]]; then rm -f "$POLICY"; fi; }
-trap cleanup_policy EXIT
 
 PKGS=(wireguard-tools iproute2 iptables nginx php-fpm php-cli php-curl qrencode openssl sudo rsync ca-certificates curl)
 [[ -n "$DOMAIN" ]] && PKGS+=(certbot)
 apt-get update -qq
 apt-get install -y -qq "${PKGS[@]}" >/dev/null
-cleanup_policy; POLICY_OURS=0
+if [[ $POLICY_OURS -eq 1 ]]; then rm -f "$POLICY"; POLICY_OURS=0; fi
 
 modprobe wireguard 2>/dev/null || true
 [[ -d /sys/module/wireguard ]] || warn "the wireguard kernel module is not loaded (needs Linux 5.6+ or the wireguard-dkms package)"
