@@ -154,7 +154,10 @@ if [[ "$SRC_DIR" != "$APP_DIR" ]]; then
   rsync -a --delete --exclude '.git' "$SRC_DIR/" "$APP_DIR/"
 fi
 chown -R root:root "$APP_DIR"
-chmod -R go-w "$APP_DIR"
+# Readable by nginx/php-fpm (www-data), writable only by root. The curl
+# bootstrap unpacks into a 0700 temp dir, so set this explicitly.
+chmod 0755 "$APP_DIR"
+chmod -R u=rwX,go=rX "$APP_DIR"
 chmod 755 "$APP_DIR/bin/wgm" "$APP_DIR/sbin/wg-manager-helper"
 install -m 0755 -o root -g root "$APP_DIR/sbin/wg-manager-helper" "$HELPER"
 ln -sf "$APP_DIR/bin/wgm" /usr/local/bin/wgm
