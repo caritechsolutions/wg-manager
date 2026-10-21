@@ -118,7 +118,21 @@ done
 command -v apt-get >/dev/null || die "this installer supports Debian/Ubuntu (apt) only"
 [[ "$IFACE" =~ ^[a-zA-Z0-9_=+.-]{1,15}$ ]] || die "invalid interface name $IFACE"
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "invalid port $PORT"
-[[ -z "$DOMAIN" || -n "$EMAIL" ]] || die "--domain needs --email for Let's Encrypt"
+# On a re-run (upgrade), keep the web settings from the previous install
+# unless new ones are given.
+PREV_INSTALL=/etc/wg-manager/install.json
+if [[ -f "$PREV_INSTALL" ]]; then
+  if [[ -z "$DOMAIN" ]]; then
+    DOMAIN="$(sed -n 's/.*"domain": *"\([^"]*\)".*/\1/p' "$PREV_INSTALL")"
+  fi
+  if [[ -z "$UI_PORT" ]]; then
+    UI_PORT="$(sed -n 's/.*"uiPort": *\([0-9]*\).*/\1/p' "$PREV_INSTALL")"
+  fi
+fi
+# An e-mail is only needed when a new certificate must be requested.
+if [[ -n "$DOMAIN" && -z "$EMAIL" && ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]]; then
+  die "--domain needs --email for Let's Encrypt"
+fi
 [[ -z "$IMPORT" || -f "$IMPORT" ]] || die "cannot read $IMPORT"
 [[ -n "$IMPORT" ]] && IMPORT="$(cd "$(dirname "$IMPORT")" && pwd)/$(basename "$IMPORT")"
 if [[ -z "$UI_PORT" ]]; then UI_PORT=$([[ -n "$DOMAIN" ]] && echo 8443 || echo 8080); fi

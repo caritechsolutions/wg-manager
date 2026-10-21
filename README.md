@@ -71,7 +71,7 @@ The installer prints the web UI address and the admin password. Common options:
 Open the WireGuard UDP port and the UI port in any firewall in front of the server.
 If ufw is active the installer opens them for you.
 
-**Upgrade:** run the same `curl … | sudo bash -s --` command again (options can be left off) —
+**Upgrade:** run the same `curl … | sudo bash -s --` command again, with no options needed: the domain and UI port from the last install are kept —
 code and services are refreshed, clients, settings, users and keys are kept.
 
 ## Moving from wg-easy (Docker)
