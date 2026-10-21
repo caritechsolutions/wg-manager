@@ -45,7 +45,8 @@ final class State
                     'lockoutMinutes'  => 15,
                 ],
                 'alerts' => [
-                    'staleMinutes' => 10,
+                    'staleSeconds' => 90,
+                    'monitorAll' => true,
                     'telegram' => ['enabled' => false, 'botToken' => '', 'chatId' => ''],
                     'webhook'  => ['enabled' => false, 'url' => ''],
                     'email'    => ['enabled' => false, 'host' => '', 'port' => 587, 'security' => 'starttls',
@@ -90,7 +91,7 @@ final class State
             'presharedKey' => null, 'enabled' => true, 'group' => '', 'notes' => '', 'expiresAt' => null,
             'serverRoutes' => [], 'advertise' => false, 'includeAdvertised' => false,
             'allowedIps' => $d['allowedIps'], 'dns' => $d['dns'], 'keepalive' => (int)$d['keepalive'],
-            'mtu' => $d['mtu'], 'monitor' => false, 'createdAt' => Util::now(), 'updatedAt' => Util::now(),
+            'mtu' => $d['mtu'], 'monitor' => false, 'mute' => false, 'createdAt' => Util::now(), 'updatedAt' => Util::now(),
         ];
     }
 
@@ -107,6 +108,20 @@ final class State
             }
         }
         return true;
+    }
+
+    /** Whether stale/recovered alerts are sent for this client. */
+    public static function alertsOn(array $settings, array $c): bool
+    {
+        if (!empty($c['mute'])) {
+            return false;
+        }
+        return !empty($settings['alerts']['monitorAll']) || !empty($c['monitor']);
+    }
+
+    public static function staleSeconds(array $settings): int
+    {
+        return max(30, (int)($settings['alerts']['staleSeconds'] ?? 90));
     }
 
     public static function isExpired(array $c, ?int $now = null): bool
@@ -164,7 +179,8 @@ final class State
                 break;
             case 'alerts':
                 $a = &$s['alerts'];
-                $a['staleMinutes'] = $int($in['staleMinutes'] ?? '', 1, 10080, 'Stale threshold') ?? 10;
+                $a['staleSeconds'] = $int($in['staleSeconds'] ?? '', 30, 86400, 'Stale threshold') ?? 90;
+                $a['monitorAll'] = $bool('monitorAll');
                 $a['telegram']['enabled'] = $bool('tgEnabled');
                 $a['telegram']['botToken'] = trim((string)($in['tgToken'] ?? '')) ?: $cur['alerts']['telegram']['botToken'];
                 $a['telegram']['chatId'] = trim((string)($in['tgChat'] ?? ''));
@@ -277,6 +293,7 @@ final class State
         $c['notes'] = Util::cleanText($in['notes'] ?? '', 500);
         $c['enabled'] = !empty($in['enabled']);
         $c['monitor'] = !empty($in['monitor']);
+        $c['mute'] = !empty($in['mute']);
         $c['advertise'] = !empty($in['advertise']);
         $c['includeAdvertised'] = !empty($in['includeAdvertised']);
 

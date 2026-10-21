@@ -143,7 +143,7 @@ sudo wgm backup | backups | restore <name>
 | `/etc/wireguard/<if>.conf` | generated config | root, 0600 |
 | `/usr/local/sbin/wg-manager-helper` | root helper | root |
 | `/etc/sudoers.d/wg-manager` | lets www-data run the helper only | root |
-| `wg-manager-tick.timer` | expiry, alerts, nightly backup (every minute) | systemd |
+| `wg-manager-tick.timer` | down detection, alerts, expiry, nightly backup (every 15 s) | systemd |
 
 **Back up `server.key` somewhere safe.** State backups don't contain it; without it every
 client needs a new config.

@@ -725,12 +725,14 @@ final class App
         }
         $out = [];
         $now = (int)$st['time'];
-        $limit = 60 * (int)self::$state['settings']['alerts']['staleMinutes'];
+        $limit = State::staleSeconds(self::$state['settings']);
+        $seenMap = Liveness::update($st);
         foreach (self::$state['clients'] as $id => $c) {
             $p = $st['peers'][$c['publicKey']] ?? null;
             $hs = (int)($p['handshake'] ?? 0);
             $out[$id] = [
-                'state'     => !State::isActive($c) ? 'off' : ($hs === 0 ? 'never' : ($now - $hs <= max($limit, 180) ? 'on' : 'stale')),
+                'state'     => Liveness::state($c, $st, $seenMap, $limit, $now),
+                'seen'      => Util::ago(Liveness::lastSeen($c, $st, $seenMap), $now),
                 'handshake' => Util::ago($hs, $now),
                 'endpoint'  => $p['endpoint'] ?? '',
                 'rx'        => Util::bytes((int)($p['rx'] ?? 0)),

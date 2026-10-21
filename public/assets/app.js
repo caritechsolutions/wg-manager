@@ -98,7 +98,7 @@
           counts.all++; counts[c.state]++;
           tr.setAttribute('data-state', c.state);
           var dot = tr.querySelector('.dot'); dot.className = 'dot st-' + c.state;
-          tr.querySelector('[data-f="handshake"]').textContent = c.handshake;
+          tr.querySelector('[data-f="seen"]').textContent = c.seen;
           tr.querySelector('[data-f="endpoint"]').textContent = c.endpoint || '—';
           tr.querySelector('[data-f="rx"]').textContent = '↓ ' + c.rx;
           tr.querySelector('[data-f="tx"]').textContent = '↑ ' + c.tx;

@@ -40,6 +40,7 @@ require_once __DIR__ . '/Totp.php';
 require_once __DIR__ . '/Auth.php';
 require_once __DIR__ . '/Alerts.php';
 require_once __DIR__ . '/Qr.php';
+require_once __DIR__ . '/Liveness.php';
 require_once __DIR__ . '/Tick.php';
 
 // Use the server's local time zone for display and the nightly-backup hour.

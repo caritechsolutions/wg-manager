@@ -3,6 +3,9 @@
 $p = (!$new && $status) ? ($status['peers'][$c['publicKey']] ?? null) : null;
 $now = (int)($status['time'] ?? time());
 $hs = (int)($p['handshake'] ?? 0);
+$seenMap = Liveness::read();
+$seen = $new ? 0 : Liveness::lastSeen($c, $status, $seenMap);
+$live = $new ? 'never' : Liveness::state($c, $status, $seenMap, State::staleSeconds($s), $now);
 $action = $new ? '?r=client' : '?r=client&id=' . urlencode($c['id']);
 $routesText = implode("\n", (array)$c['serverRoutes']);
 $others = [];
@@ -18,9 +21,9 @@ foreach ($state['clients'] as $o) {
 <div class="toolbar">
   <a href="?r=clients" class="small">← Clients</a>
   <h1 class="grow">
-    <?php if (!$new): ?><span class="dot st-<?= !State::isActive($c) ? 'off' : ($hs && $now - $hs < 180 ? 'on' : ($hs ? 'stale' : 'never')) ?>" aria-hidden="true"></span><?php endif; ?>
+    <?php if (!$new): ?><span class="dot st-<?= $live ?>" aria-hidden="true"></span><?php endif; ?>
     <?= $new ? 'New client' : h($c['name']) ?>
-    <?php if (!$new): ?><span class="mono muted h-sub"><?= h($c['address']) ?> · <?= $p ? 'handshake ' . h(Util::ago($hs, $now)) : 'not connected' ?></span><?php endif; ?>
+    <?php if (!$new): ?><span class="mono muted h-sub"><?= h($c['address']) ?> · <?= $seen ? 'last seen ' . h(Util::ago($seen, $now)) : 'not connected' ?></span><?php endif; ?>
   </h1>
   <button class="btn primary" type="submit" form="clientForm"><?= $new ? 'Create' : 'Save &amp; apply' ?></button>
 </div>
@@ -40,7 +43,13 @@ foreach ($state['clients'] as $o) {
     <label>Notes<input class="inp" name="notes" value="<?= h($c['notes']) ?>" maxlength="500"></label>
     <div class="checks">
       <label class="check"><input type="checkbox" name="enabled" value="1" <?= $c['enabled'] ? 'checked' : '' ?>> Enabled</label>
+      <?php if (!empty($s['alerts']['monitorAll'])): ?>
+      <label class="check"><input type="checkbox" name="mute" value="1" <?= !empty($c['mute']) ? 'checked' : '' ?>> Don't alert for this client <span class="help">(all clients are monitored — see Settings → Alerts)</span></label>
+      <input type="hidden" name="monitor" value="<?= !empty($c['monitor']) ? '1' : '' ?>">
+      <?php else: ?>
       <label class="check"><input type="checkbox" name="monitor" value="1" <?= !empty($c['monitor']) ? 'checked' : '' ?>> Alert me when this client goes stale</label>
+      <input type="hidden" name="mute" value="<?= !empty($c['mute']) ? '1' : '' ?>">
+      <?php endif; ?>
     </div>
   </section>
 
@@ -58,7 +67,7 @@ foreach ($state['clients'] as $o) {
     <div class="grid2">
       <label>Client AllowedIPs<input class="inp mono" name="allowedIps" value="<?= h($c['allowedIps']) ?>" required><span class="help">What the device sends into the tunnel.</span></label>
       <label>DNS<input class="inp mono" name="dns" value="<?= h($c['dns']) ?>" placeholder="(none)"></label>
-      <label>Persistent keepalive (s)<input class="inp mono" name="keepalive" value="<?= h((string)$c['keepalive']) ?>" inputmode="numeric"><span class="help">0 = off. 25 for devices behind NAT.</span></label>
+      <label>Persistent keepalive (s)<input class="inp mono" name="keepalive" value="<?= h((string)$c['keepalive']) ?>" inputmode="numeric"><span class="help">0 = off. Needed for fast down-detection: an idle client without keepalive looks stale. Keep it well under the stale threshold (<?= State::staleSeconds($s) ?> s).</span></label>
       <label>MTU<input class="inp mono" name="mtu" value="<?= h((string)($c['mtu'] ?? '')) ?>" placeholder="default" inputmode="numeric"></label>
     </div>
     <label class="check"><input type="checkbox" name="includeAdvertised" value="1" <?= !empty($c['includeAdvertised']) ? 'checked' : '' ?>> Also route advertised site subnets
@@ -98,10 +107,11 @@ PublicKey    = <?= h($c['publicKey']) ?>
     </div>
     <dl class="kv">
       <dt>Endpoint</dt><dd class="mono"><?= h($p['endpoint'] ?? '') ?: '—' ?></dd>
+      <dt>Last seen</dt><dd><?= h(Util::ago($seen, $now)) ?></dd>
       <dt>Handshake</dt><dd><?= h(Util::ago($hs, $now)) ?></dd>
       <dt>Received</dt><dd class="mono"><?= Util::bytes((int)($p['rx'] ?? 0)) ?></dd>
       <dt>Sent</dt><dd class="mono"><?= Util::bytes((int)($p['tx'] ?? 0)) ?></dd>
-      <dt>Alerts</dt><dd><?= !empty($c['monitor']) ? h($alertState[$c['id']] ?? 'watching') : 'off' ?></dd>
+      <dt>Alerts</dt><dd><?= State::alertsOn($s, $c) ? h($alertState[$c['id']] ?? 'watching') : 'off' ?></dd>
       <dt>Created</dt><dd><?= h(substr($c['createdAt'], 0, 10)) ?></dd>
     </dl>
   </section>

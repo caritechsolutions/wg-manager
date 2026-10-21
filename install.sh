@@ -300,12 +300,12 @@ ExecStart=/usr/bin/php $APP_DIR/bin/wgm tick
 EOF
 cat >/etc/systemd/system/wg-manager-tick.timer <<EOF
 [Unit]
-Description=Run the wg-manager background job every minute
+Description=Run the wg-manager background job every 15 seconds
 
 [Timer]
 OnBootSec=1min
-OnUnitActiveSec=1min
-AccuracySec=10s
+OnUnitActiveSec=15s
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target

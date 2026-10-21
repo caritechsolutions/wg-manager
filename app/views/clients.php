@@ -1,13 +1,14 @@
 <?php
 /** @var array $clients @var ?array $status @var array $s @var string $csrf */
 $now = (int)($status['time'] ?? time());
-$limit = max(180, 60 * (int)$s['alerts']['staleMinutes']);
+$limit = State::staleSeconds($s);
+$seenMap = $status ? Liveness::update($status) : Liveness::read();
 $rows = [];
 $counts = ['all' => 0, 'on' => 0, 'stale' => 0, 'never' => 0, 'off' => 0];
 foreach ($clients as $id => $c) {
     $p = $status['peers'][$c['publicKey']] ?? null;
-    $hs = (int)($p['handshake'] ?? 0);
-    $st = !State::isActive($c) ? 'off' : ($hs === 0 ? 'never' : ($now - $hs <= $limit ? 'on' : 'stale'));
+    $hs = Liveness::lastSeen($c, $status, $seenMap);
+    $st = Liveness::state($c, $status, $seenMap, $limit, $now);
     $counts['all']++;
     $counts[$st]++;
     $rows[] = [$c, $p, $st, $hs];
@@ -17,7 +18,7 @@ $filters = ['all' => 'All', 'on' => 'Online', 'stale' => 'Stale', 'never' => 'Ne
 <section class="tiles" aria-label="Summary">
   <div class="tile"><div class="tlabel">Clients</div><div class="tval" data-count="all"><?= $counts['all'] ?></div></div>
   <div class="tile"><div class="tlabel">Online</div><div class="tval c-on" data-count="on"><?= $counts['on'] ?></div></div>
-  <div class="tile"><div class="tlabel">Stale (&gt;<?= (int)($limit / 60) ?> min)</div><div class="tval c-stale" data-count="stale"><?= $counts['stale'] ?></div></div>
+  <div class="tile"><div class="tlabel">Stale (silent &gt;<?= $limit ?> s)</div><div class="tval c-stale" data-count="stale"><?= $counts['stale'] ?></div></div>
   <div class="tile"><div class="tlabel">Never connected</div><div class="tval c-never" data-count="never"><?= $counts['never'] ?></div></div>
 </section>
 
@@ -41,7 +42,7 @@ $filters = ['all' => 'All', 'on' => 'Online', 'stale' => 'Stale', 'never' => 'Ne
   <div class="table-scroll">
   <table class="clients">
     <thead>
-      <tr><th scope="col">Client</th><th scope="col">Routes on hub</th><th scope="col">Endpoint</th><th scope="col">Handshake</th><th scope="col">Rx / Tx</th><th scope="col">On</th><th scope="col" class="right">Actions</th></tr>
+      <tr><th scope="col">Client</th><th scope="col">Routes on hub</th><th scope="col">Endpoint</th><th scope="col">Last seen</th><th scope="col">Rx / Tx</th><th scope="col">On</th><th scope="col" class="right">Actions</th></tr>
     </thead>
     <tbody>
     <?php if (!$rows): ?>
@@ -60,7 +61,7 @@ $filters = ['all' => 'All', 'on' => 'Online', 'stale' => 'Stale', 'never' => 'Ne
         </td>
         <td class="mono small <?= $c['serverRoutes'] ? 'c-accent' : 'muted' ?>"><?= $c['serverRoutes'] ? h(implode(', ', $c['serverRoutes'])) : '—' ?></td>
         <td class="mono small muted ellipsis" data-f="endpoint"><?= h($p['endpoint'] ?? '') ?: '—' ?></td>
-        <td class="small" data-f="handshake"><?= h(Util::ago($hs, $now)) ?></td>
+        <td class="small" data-f="seen" title="Last packet received (keepalive, data or handshake)"><?= h(Util::ago($hs, $now)) ?></td>
         <td class="mono small muted"><span data-f="rx">↓ <?= Util::bytes((int)($p['rx'] ?? 0)) ?></span><br><span data-f="tx">↑ <?= Util::bytes((int)($p['tx'] ?? 0)) ?></span></td>
         <td>
           <button type="button" class="toggle" role="switch" aria-checked="<?= $c['enabled'] ? 'true' : 'false' ?>" aria-label="Enable <?= h($c['name']) ?>" data-toggle="<?= h($c['id']) ?>"><span></span></button>

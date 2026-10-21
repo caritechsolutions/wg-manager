@@ -67,9 +67,11 @@ $chk = fn(bool $v) => $v ? 'checked' : '';
 
   <form class="card" method="post" action="?r=settings" id="alerts">
     <?= $hidden ?><input type="hidden" name="section" value="alerts">
-    <h2>Stale-peer alerts</h2>
-    <p class="help">Sent when a client with “Alert me” switched on has no handshake for longer than the threshold, and again when it comes back.</p>
-    <label>Threshold (minutes)<input class="inp mono" name="staleMinutes" value="<?= (int)$al['staleMinutes'] ?>"></label>
+    <h2>Down detection &amp; alerts</h2>
+    <p class="help">A client is <b>stale</b> when the hub has received nothing from it — no keepalive, data or handshake — for longer than the threshold. Checked every 15 s. Clients need a PersistentKeepalive in their config (e.g. 25 s) or they look stale whenever they're idle.</p>
+    <label>Stale after (seconds without traffic)<input class="inp mono" name="staleSeconds" value="<?= State::staleSeconds($s) ?>" inputmode="numeric"><span class="help">90 s = about three missed 25-second keepalives. Minimum 30.</span></label>
+    <label class="check"><input type="checkbox" name="monitorAll" value="1" <?= $chk(!empty($al['monitorAll'])) ?>> Alert for every enabled client <span class="help">(mute single clients on their page). Off = only clients you tick individually.</span></label>
+    <p class="help">Alerts are sent when a client goes down and when it comes back; several at once are combined into one message. Clients that were already offline don't alert until they've been seen once.</p>
     <fieldset class="sub">
       <legend><label class="check"><input type="checkbox" name="tgEnabled" value="1" <?= $chk($al['telegram']['enabled']) ?>> Telegram</label></legend>
       <div class="grid2">
