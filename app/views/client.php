@@ -1,5 +1,5 @@
 <?php
-/** @var array $c @var bool $new @var array $state @var array $s @var ?array $status @var string $csrf @var array $alertState */
+/** @var array $c @var bool $new @var array $state @var array $s @var ?array $status @var string $csrf @var array $alertState @var ?array $setupCmd @var ?int $setupExpires @var bool $setupInsecure */
 $p = (!$new && $status) ? ($status['peers'][$c['publicKey']] ?? null) : null;
 $now = (int)($status['time'] ?? time());
 $hs = (int)($p['handshake'] ?? 0);
@@ -125,6 +125,35 @@ PublicKey    = <?= h($c['publicKey']) ?>
     <?php endif; ?>
     <a class="btn" href="?r=client-conf&amp;id=<?= h(urlencode($c['id'])) ?>">Download .conf</a>
   </section>
+
+  <?php if ($c['privateKey'] !== null): ?>
+  <section class="card">
+    <h2>Setup command</h2>
+    <p class="muted small">One command for a new Linux device: installs WireGuard, writes this config and starts the tunnel. The link works for 24 hours.</p>
+    <?php if ($setupInsecure): ?>
+      <p class="small"><strong>Warning:</strong> this UI is plain HTTP, so the command would send the private key unencrypted. Set up HTTPS first (installer <code>--domain</code>).</p>
+    <?php endif; ?>
+    <?php if ($setupCmd): ?>
+      <pre class="code"><?= h($setupCmd['cmd']) ?></pre>
+      <button type="button" class="btn small" data-copy="<?= h($setupCmd['cmd']) ?>">Copy command</button>
+      <p class="muted small">Shown once — copy it now. Valid until <?= h(date('D j M H:i', (int)$setupCmd['expires'])) ?>.</p>
+    <?php elseif ($setupExpires): ?>
+      <p class="small">A setup link is active until <?= h(date('D j M H:i', (int)$setupExpires)) ?>.</p>
+    <?php endif; ?>
+    <div class="btnrow">
+      <form method="post" action="?r=client-action&amp;id=<?= h(urlencode($c['id'])) ?>" <?= $setupExpires && !$setupCmd ? 'data-confirm="Create a new setup command? The current link stops working."' : '' ?>>
+        <input type="hidden" name="_csrf" value="<?= h($csrf) ?>"><input type="hidden" name="action" value="setup-link">
+        <button class="btn" type="submit"><?= $setupExpires ? 'New setup command' : 'Create setup command' ?></button>
+      </form>
+      <?php if ($setupExpires): ?>
+      <form method="post" action="?r=client-action&amp;id=<?= h(urlencode($c['id'])) ?>">
+        <input type="hidden" name="_csrf" value="<?= h($csrf) ?>"><input type="hidden" name="action" value="setup-cancel">
+        <button class="btn" type="submit">Cancel link</button>
+      </form>
+      <?php endif; ?>
+    </div>
+  </section>
+  <?php endif; ?>
 
   <section class="card">
     <h2>Keys</h2>

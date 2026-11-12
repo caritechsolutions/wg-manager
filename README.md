@@ -17,6 +17,7 @@ couldn't do: **subnets behind a client** (site LANs behind a MikroTik, etc.) rou
 - Client AllowedIPs, DNS, keepalive, MTU, group, notes, expiry date (expired clients are dropped from the hub)
 - Generated keys (phones/laptops) or bring-your-own public key (routers keep their private key)
 - QR code, `.conf` download, key rotation, preshared keys
+- **Setup command** — a 24-hour link that turns a new Linux device into a connected client with one `curl … | sudo bash`
 
 **Hub**
 - `/etc/wireguard/<if>.conf` is always generated — never hand-edited
@@ -73,6 +74,26 @@ If ufw is active the installer opens them for you.
 
 **Upgrade:** run the same `curl … | sudo bash -s --` command again, with no options needed: the domain and UI port from the last install are kept —
 code and services are refreshed, clients, settings, users and keys are kept.
+
+## Setting up a new device with one command
+
+On a client's page, **Create setup command** gives you a line like:
+
+```bash
+curl -fsSL "https://vpn.example.com:8443/?r=setup&t=<token>" | sudo bash
+```
+
+Run on a new Debian/Ubuntu device, it installs WireGuard, writes that client's config to
+`/etc/wireguard/wg0.conf` (an existing file is backed up), enables and starts `wg-quick@wg0`,
+and pings the hub to confirm the tunnel. Use `sudo WG_IF=wg1 bash` for another interface name.
+
+- The link works for 24 hours and can be re-run in that time. Creating a new command, rotating
+  the client's keys, disabling or deleting the client, or **Cancel link** ends it.
+- The command is shown once; only a hash of the token is stored.
+- The token is the credential, so the link works from addresses outside the UI allow-list.
+  It carries the client's private key: serve the UI over HTTPS (`--domain`) before using it.
+- Not offered for clients that keep their own private key.
+- Each link creation and each download is in the audit log.
 
 ## Moving from wg-easy (Docker)
 
