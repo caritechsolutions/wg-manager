@@ -7,7 +7,7 @@ declare(strict_types=1);
  * the helper ignores overrides because it runs as root via sudo.
  */
 
-define('WGM_VERSION', '1.0.0');
+define('WGM_VERSION', '1.1.0');
 define('WGM_APP_DIR', dirname(__DIR__));
 
 $isHelper = defined('WGM_IS_HELPER');
@@ -25,6 +25,7 @@ define('WGM_USERS_FILE', WGM_STATE_DIR . '/users.json');
 define('WGM_AUDIT_FILE', WGM_STATE_DIR . '/audit.jsonl');
 define('WGM_LOGINS_FILE', WGM_STATE_DIR . '/logins.json');
 define('WGM_ALERTS_FILE', WGM_STATE_DIR . '/alerts-state.json');
+define('WGM_SETUP_FILE', WGM_STATE_DIR . '/setup-links.json');
 define('WGM_BACKUP_DIR', WGM_STATE_DIR . '/backups');
 define('WGM_INSTALL_FILE', WGM_ETC_DIR . '/install.json');
 
@@ -42,6 +43,7 @@ require_once __DIR__ . '/Alerts.php';
 require_once __DIR__ . '/Qr.php';
 require_once __DIR__ . '/Liveness.php';
 require_once __DIR__ . '/Tick.php';
+require_once __DIR__ . '/SetupLinks.php';
 
 // Use the server's local time zone for display and the nightly-backup hour.
 (static function (): void {

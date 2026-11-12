@@ -23,6 +23,12 @@ final class App
         self::$state = Store::load();
         $settings = self::$state['settings'];
         $ip = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+        // Setup links are for devices that cannot log in: the token is the credential,
+        // so this route sits in front of the allow-list and the session.
+        if (($_GET['r'] ?? '') === 'setup') {
+            self::setupScript();
+            return;
+        }
         if (!Auth::ipAllowed($settings, $ip)) {
             http_response_code(403);
             self::bare('Forbidden', '<p>Your address is not allowed to use this interface.</p>');
@@ -308,7 +314,16 @@ final class App
             $c = array_merge($c, $_SESSION['form']);
             unset($_SESSION['form']);
         }
-        self::page($new ? 'New client' : $c['name'], 'client', ['c' => $c, 'new' => $new, 'alertState' => Tick::alertState()], 'clients');
+        $setupCmd = null;
+        if (!$new && ($_SESSION['setupCmd']['id'] ?? null) === $c['id']) {
+            $setupCmd = $_SESSION['setupCmd'];   // shown once
+            unset($_SESSION['setupCmd']);
+        }
+        self::page($new ? 'New client' : $c['name'], 'client', [
+            'c' => $c, 'new' => $new, 'alertState' => Tick::alertState(),
+            'setupCmd' => $setupCmd, 'setupExpires' => $new ? null : SetupLinks::activeFor($c['id']),
+            'setupInsecure' => !str_starts_with(self::baseUrl(), 'https://'),
+        ], 'clients');
     }
 
     private static function clientSave(): void
@@ -371,6 +386,7 @@ final class App
             self::saveAndApply(function (array &$st) use ($id) {
                 unset($st['clients'][$id]);
             }, 'client-delete', 'client.delete', "{$c['name']} ({$c['address']})", "Client {$c['name']} deleted.");
+            SetupLinks::revoke($id);
             self::redirect('clients');
         }
         if ($a === 'toggle') {
@@ -389,6 +405,22 @@ final class App
                 $cl['presharedKey'] = $cl['presharedKey'] !== null || self::$state['settings']['defaults']['presharedKey'] ? Keys::generatePreshared() : null;
                 $cl['updatedAt'] = Util::now();
             }, 'client-rotate', 'client.rotate-keys', $c['name'], "New keys generated for {$c['name']} — the device needs the new config.");
+            SetupLinks::revoke($id);
+        } elseif ($a === 'setup-link') {
+            if ($c['privateKey'] === null) {
+                self::flash('error', 'This device keeps its own private key, so a setup command cannot be made for it.');
+            } elseif (!State::isActive($c)) {
+                self::flash('error', 'Enable the client (and check its expiry date) before creating a setup command.');
+            } else {
+                $l = SetupLinks::create($id, (string)Auth::user());
+                $_SESSION['setupCmd'] = ['id' => $id, 'cmd' => self::setupCommand($l['token']), 'expires' => $l['expires']];
+                Audit::log('client.setup-link', $c['name']);
+            }
+        } elseif ($a === 'setup-cancel') {
+            if (SetupLinks::revoke($id)) {
+                Audit::log('client.setup-link-cancel', $c['name']);
+                self::flash('ok', "Setup link for {$c['name']} cancelled.");
+            }
         } elseif ($a === 'set-public-key') {
             $pk = trim(self::input('publicKey'));
             self::saveAndApply(function (array &$st) use ($id, $pk) {
@@ -408,6 +440,43 @@ final class App
         header('Content-Disposition: attachment; filename="' . Render::clientFilename($c) . '.conf"');
         echo Render::client(self::$state, $c);
         exit;
+    }
+
+    /** Public base URL of this UI, for commands run on other machines. */
+    private static function baseUrl(): string
+    {
+        $inst = Util::readJson(WGM_INSTALL_FILE, []);
+        if (!empty($inst['domain'])) {
+            $tls = !empty($inst['tls']);
+            $port = (int)($inst['uiPort'] ?? 0);
+            $std = $port === 0 || $port === ($tls ? 443 : 80);
+            return ($tls ? 'https' : 'http') . '://' . $inst['domain'] . ($std ? '' : ':' . $port);
+        }
+        $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
+        $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+        if (!preg_match('/^[A-Za-z0-9.\-:\[\]]+$/', $host)) {
+            $host = 'SERVER_ADDRESS';
+        }
+        return ($https ? 'https' : 'http') . '://' . $host;
+    }
+
+    private static function setupCommand(string $token): string
+    {
+        return 'curl -fsSL "' . self::baseUrl() . '/?r=setup&t=' . $token . '" | sudo bash';
+    }
+
+    /** Public: a device with a live setup link fetches its install script. */
+    private static function setupScript(): void
+    {
+        header('Content-Type: text/plain; charset=utf-8');
+        $id = SetupLinks::clientFor(is_string($_GET['t'] ?? null) ? $_GET['t'] : null);
+        $c = $id !== null ? (self::$state['clients'][$id] ?? null) : null;
+        if (!$c || $c['privateKey'] === null || !State::isActive($c)) {
+            echo Render::setupError('This setup link is not valid or has expired. Ask your administrator for a new one.');
+            return;
+        }
+        Audit::log('client.setup-download', $c['name'], 'setup-link');
+        echo Render::setupScript(self::$state, $c);
     }
 
     private static function clientQr(): void
